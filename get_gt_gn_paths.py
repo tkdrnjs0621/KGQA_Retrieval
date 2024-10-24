@@ -32,6 +32,7 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
     if(n_hops==0):
         example["gn_path_triplet"]=None
         example["gt_path_triplet"]=None
+        example["n_hops"]=n_hops
         return example
     query = example["question"]
     graph_dict = {}
@@ -61,6 +62,7 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
     if(len(gt_1hop_triplet)==0):
         example["gn_path_triplet"]=None
         example["gt_path_triplet"]=None
+        example["n_hops"]=n_hops
         return example
     
     scores = get_score(texts_1hop,batch_size,tokenizer,contriever,output_query)
@@ -70,21 +72,24 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
     else:
         _, top_k_indices = torch.topk(torch.tensor(scores), retrieving_depth_1hop)
         # remove all gt
-        top_negative_triplets = [original[k] for k in top_k_indices if original[k][1] not in [p[0] for p in example["gt_path"] if len(p)>0]] 
+        top_negative_triplets = [original[k] for k in top_k_indices if  original[k][1] not in [p[0] for p in example["gt_path"] if len(p)>0]] 
     
     if(len(top_negative_triplets)>=n_negative_1hop):
         negative_1hop_triplet = top_negative_triplets[:n_negative_1hop]
     else:
         example["gn_path_triplet"]=None
         example["gt_path_triplet"]=None
+        example["n_hops"]=n_hops
         return example
 
     if(n_hops==1):
         example["gn_path_triplet"]=negative_1hop_triplet
         example["gt_path_triplet"]=[gt_1hop_triplet[0]] # Choose the first GT triplet
+        example["n_hops"]=n_hops
         return example
     
     else:
+        
         gt_1hop_triplet_chosen=None
         for gt_1hop_triplet_candidate in gt_1hop_triplet:
             if(gt_1hop_triplet_candidate[2] in graph_dict):
@@ -94,18 +99,20 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
         if(gt_1hop_triplet_chosen==None): # if 2hop for valid gt 1hop does not exists
             example["gn_path_triplet"]=None
             example["gt_path_triplet"]=None
+            example["n_hops"]=n_hops
             return example
-
+        
         gt_2hop_triplet = []
         for triplet_a in graph_dict[gt_1hop_triplet_chosen[2]]: #2-hop triplets for chosen 1hop
-            if(gt_2hop_triplet==None and triplet_a[1] in [tmp[1] for tmp in example["gt_path"] if len(tmp)>1]):
+            if(triplet_a[1] in [tmp[1] for tmp in example["gt_path"] if len(tmp)>1]):
                 gt_2hop_triplet.append(triplet_a)
 
         if(len(gt_2hop_triplet)==0):
             example["gn_path_triplet"]=None
             example["gt_path_triplet"]=None
+            example["n_hops"]=n_hops
             return example
-
+        
         texts_2hop=[]
         original=[]
         for n in negative_1hop_triplet:
@@ -121,7 +128,7 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
                     
         if(len(scores)<retrieving_depth_2hop):
             #remove gt
-            top_negative_triplets = [i for i in original if i[1] not in [p[1] for p in example["gt_path"] if len(p)>0]]
+            top_negative_triplets = [i for i in original if i[1] not in [p[1] for p in example["gt_path"] if len(p)>1]]
         else:
             _, top_k_indices = torch.topk(torch.tensor(scores), retrieving_depth_2hop)
             #remove gt
@@ -132,12 +139,13 @@ def _get_negatives(example,contriever_tokenizer,contriever_model,batch_size,retr
         else:
             example["gn_path_triplet"]=None
             example["gt_path_triplet"]=None
+            example["n_hops"]=n_hops
             return example
-
+        
         example["gn_path_triplet"]=negative_1hop_triplet+negative_2hop_triplet
         example["gt_path_triplet"]=[gt_1hop_triplet_chosen,gt_2hop_triplet[0]] # choose the first gt 2hop triplet
-        print(example["gt_path_triplet"])
-        assert()
+        example["n_hops"]=n_hops
+        
         return example
 
 def map_gt_path(example, dictionary):
@@ -163,7 +171,8 @@ def main():
                 
     dataset_original = load_dataset(args.original_dataset,split=args.original_dataset_split)
     dataset_merged = dataset_original.map(partial(map_gt_path,dictionary=path_dict)).filter(lambda x:x["gt_path"] is not None)
-
+    # print(dataset_merged[1]["gt_path"])
+    # assert()
     tokenizer = AutoTokenizer.from_pretrained("facebook/contriever",clean_up_tokenization_spaces=True)
     model = AutoModel.from_pretrained("facebook/contriever").to('cuda')
 

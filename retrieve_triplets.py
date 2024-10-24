@@ -28,7 +28,7 @@ def get_score(_texts,batch_size__,tokenizer,contriever,output_query):
 
     return scores
 
-def _get_retrieved(example,contriever_tokenizer,contriever_model,batch_size,retrieving_depth_1hop,retrieving_depth_2hop):
+def _get_retrieved(example,contriever_tokenizer,contriever_model,batch_size,retrieving_depth_1hop,retrieving_depth_2hop,force_2hop):
     n_hops= len(example["gt_path"][0])
     
     query = example["question"]
@@ -47,13 +47,10 @@ def _get_retrieved(example,contriever_tokenizer,contriever_model,batch_size,retr
 
     texts_1hop = []
     original = []
-    gt_1hop_triplet = []
     for triplet_a in graph_dict[example["q_entity"][0]]:
         txt = " ".join(triplet_a)
         texts_1hop.append(txt)
         original.append(triplet_a)
-        if(triplet_a[1] in [tmp[0] for tmp in example["gt_path"] if len(tmp)>0]):
-            gt_1hop_triplet.append(triplet_a)
     
     scores = get_score(texts_1hop,batch_size,tokenizer,contriever,output_query)
 
@@ -64,24 +61,13 @@ def _get_retrieved(example,contriever_tokenizer,contriever_model,batch_size,retr
         top_triplets = [original[k] for k in top_k_indices]
     
     top_triplets_1hop=copy.deepcopy(top_triplets)
-    if(n_hops==1):
+    if(n_hops==1 and not force_2hop):
         top_triplets_te = [t[2] for t in top_triplets]
-        example["is_gt_retrieved"] = 1 if example["a_entity"] in top_triplets_te else 0
+        example["is_gt_retrieved"] = 1 if any((ea in top_triplets_te) for ea in example["a_entity"]) else 0
         example["retrieved_triplets"] = top_triplets_1hop
         return example
     
     else:
-        gt_1hop_triplet_chosen=None
-        for gt_1hop_triplet_candidate in gt_1hop_triplet:
-            if(gt_1hop_triplet_candidate[2] in graph_dict):
-                gt_1hop_triplet_chosen = gt_1hop_triplet_candidate # Choose the first valid gt 1hop
-                break
-
-        gt_2hop_triplet = []
-        for triplet_a in graph_dict[gt_1hop_triplet_chosen[2]]: #2-hop triplets for chosen 1hop
-            if(gt_2hop_triplet==None and triplet_a[1] in [tmp[1] for tmp in example["gt_path"] if len(tmp)>1]):
-                gt_2hop_triplet.append(triplet_a)
-
         texts_2hop=[]
         original=[]
         for n in top_triplets:
@@ -100,17 +86,18 @@ def _get_retrieved(example,contriever_tokenizer,contriever_model,batch_size,retr
             _, top_k_indices = torch.topk(torch.tensor(scores), retrieving_depth_2hop)
             top_triplets = [original[k] for k in top_k_indices]
         
-        top_triplets_te = [t[2] for t in top_triplets]
-        example["is_gt_retrieved"] = 1 if example["a_entity"] in top_triplets_te else 0
+        top_triplets_te = [t[2] for t in top_triplets]+[t[2] for t in top_triplets_1hop] if force_2hop else [t[2] for t in top_triplets]
+        example["is_gt_retrieved"] = 1 if any((ea in top_triplets_te) for ea in example["a_entity"]) else 0
         example["retrieved_triplets"] = top_triplets+top_triplets_1hop
         return example
         
 
 def main():
     parser = argparse.ArgumentParser(description="Processing")
-    parser.add_argument("--original_dataset", type=str, default="tkdrnjs0621/webqsp_gt_gn_paths", help="directory")
+    parser.add_argument("--original_dataset", type=str, default="tkdrnjs0621/webqsp_gt_gn_paths_revised", help="directory")
     parser.add_argument("--original_dataset_split", type=str, default="test", help="directory")
     parser.add_argument("--output_directory", type=str, default="./data/", help="directory")
+    parser.add_argument("--force_2hop", action="store_true", help="directory")
     parser.add_argument("--batch_size", type=int, default=8, help="number of processors for processing datasets")
     parser.add_argument("--retrieving_depth", type=int, default=8, help="number of processors for processing datasets")
 
@@ -121,12 +108,13 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained("facebook/contriever",clean_up_tokenization_spaces=True)
     model = AutoModel.from_pretrained("facebook/contriever").to('cuda')
 
-    dataset_check_retrieved = dataset.map(partial(_get_retrieved, contriever_tokenizer=tokenizer,contriever_model=model,batch_size=args.batch_size,retrieving_depth_1hop=args.retrieving_depth,retrieving_depth_2hop=args.retrieving_depth))
-    dataset_check_retrieved = dataset_check_retrieved.select_columns(["question", "q_entity", "a_entity", "gt_path_triplet", "gn_path_triplet", "retrieved"])
+    dataset_check_retrieved = dataset.map(partial(_get_retrieved, contriever_tokenizer=tokenizer,contriever_model=model,batch_size=args.batch_size,retrieving_depth_1hop=args.retrieving_depth,retrieving_depth_2hop=args.retrieving_depth,force_2hop=args.force_2hop))
+    dataset_check_retrieved = dataset_check_retrieved.select_columns(["question", "q_entity", "a_entity", "gt_path_triplet", "gn_path_triplet", "is_gt_retrieved","retrieved_triplets","n_hops"])
     dataset_check_retrieved.save_to_disk(args.output_directory)
-    hr=(sum(dataset_check_retrieved["is_gt_retrieved"])/len(dataset_check_retrieved))
-    print(f"Hit ratio : {hr:.2f}")
+    hr1 = (sum(dataset_check_retrieved.filter(lambda x: x["n_hops"]==1)["is_gt_retrieved"])/len(dataset_check_retrieved))
+    hr2 =  (sum(dataset_check_retrieved.filter(lambda x: x["n_hops"]==2)["is_gt_retrieved"])/len(dataset_check_retrieved))
+    hrt=(sum(dataset_check_retrieved["is_gt_retrieved"])/len(dataset_check_retrieved))
+    print(f"Hit ratio Total/1hop/2hop: {hrt:.2f}/{hr1:.2f}/{hr2:.2f}")
 
-    
 if __name__=='__main__':
     main()

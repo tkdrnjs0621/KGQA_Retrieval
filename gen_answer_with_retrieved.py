@@ -51,7 +51,7 @@ def generate(model, tokenizer, dataloader, logger, log_every, **kwargs):
 def decode(example, tokenizer, feature):
     text = tokenizer.decode(example[feature + "_ids"], skip_special_tokens=True)
     return {feature: text}
-def build_messages(example,no_rag,zero_shot,n_negative,fs_case_1,fs_case_2):
+def build_messages(example,no_rag,zero_shot,fs_case_1,fs_case_2):
 
     q = example["question"]
     if(no_rag):
@@ -61,7 +61,7 @@ def build_messages(example,no_rag,zero_shot,n_negative,fs_case_1,fs_case_2):
         ]
     else:
         def get_knowledge_text(data):
-            triplet_list = (data['gn_path_triplet'][:n_negative] if example["n_hops"]==1 else (data['gn_path_triplet'][8:8+n_negative]))+data['gt_path_triplet']
+            triplet_list = data["retrieved_triplets"]
             random.shuffle(triplet_list)
             triplet_list = ["("+", ".join(t)+")" for t in triplet_list]
             txt="\n".join(triplet_list)
@@ -118,14 +118,15 @@ def main():
     parser = argparse.ArgumentParser(description="Processing")
     parser.add_argument("--no_rag", action="store_true", help="directory")
     parser.add_argument("--zero_shot", action="store_true", help="directory")
-    parser.add_argument("--original_dataset", type=str, default="tkdrnjs0621/webqsp_gt_gn_paths_revised", help="directory")
+    parser.add_argument("--original_dataset", type=str, default="tkdrnjs0621/webqsp_retrieved_naive_contriver", help="directory")
     parser.add_argument("--original_dataset_split", type=str, default="test", help="directory")
+    parser.add_argument("--original_dataset_config", type=str, default="ra_triplets1", help="directory")
     parser.add_argument("--output_directory", type=str, default="./data/", help="directory")
     parser.add_argument("--max_tokens", type=int, default=150, help="generation config; max new tokens")
-    parser.add_argument("--n_negative", type=int, default=2, help="generation config; max new tokens")
     parser.add_argument("--do_sample", type=bool, default=True, help="generation config; whether to do sampling, greedy if not set")
     parser.add_argument("--temperature", type=float, default=0.5, help="generation config; temperature")
     parser.add_argument("--top_k", type=int, default=50, help="generation config; top k")
+    parser.add_argument("--n_hops", type=int, default=1, help="n_hops")
     parser.add_argument("--top_p", type=float, default=0.5, help="generation config; top p, nucleus sampling")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size for inference")
     parser.add_argument("--num_proc", type=int, default=16, help="number of processors for processing datasets")
@@ -133,7 +134,7 @@ def main():
 
     args = parser.parse_args()
 
-    dataset = load_dataset(args.original_dataset,split=args.original_dataset_split)
+    dataset = load_dataset(args.original_dataset,args.original_dataset_config,split=args.original_dataset_split)
     case_1 = dataset[0]
     case_2 = dataset[1]
     # dataset = dataset.select(range(2,len(dataset)))
@@ -149,7 +150,7 @@ def main():
     model.eval()
     tokenizer.pad_token = tokenizer.eos_token
 
-    dataset=dataset.map(partial(build_messages,no_rag=args.no_rag,zero_shot=args.zero_shot,n_negative=args.n_negative,fs_case_1=case_1,fs_case_2=case_2))
+    dataset=dataset.map(partial(build_messages,no_rag=args.no_rag,zero_shot=args.zero_shot,fs_case_1=case_1,fs_case_2=case_2))
     dataset = dataset.map(partial(build_prompt, tokenizer=tokenizer), num_proc=16)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_proc, collate_fn=partial(collate_fn, tokenizer=tokenizer), pin_memory=True)  # type: ignore
     print("Len data",len(dataset),len(dataloader))
@@ -159,10 +160,11 @@ def main():
     dataset = dataset.add_column("model_answer_ids", output_ids)  # type: ignore
     dataset = dataset.map(partial(decode, tokenizer=tokenizer, feature="model_answer"), num_proc=args.num_proc)
     dataset = dataset.map(ifhit)
-    dataset = dataset.select_columns(["question", "q_entity", "a_entity", "gt_path_triplet", "gn_path_triplet", "model_answer", "messages","hit","n_hops"])
+    # dataset = dataset.select_columns(["question", "q_entity", "a_entity", "retrieved_triplets", "model_answer", "messages","hit"])
+    dataset.save_to_disk(args.output_directory)
+
 
     print(f"Hit ratio : {sum(dataset['hit'])/len(dataset):.2f}")
     
-    dataset.save_to_disk(args.output_directory)
 if __name__ == "__main__":
     main()
